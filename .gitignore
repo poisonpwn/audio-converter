@@ -1,2 +1,4 @@
 **/__pycache__
-.venv
+**/.venv
+**/.next
+**/node_modules
