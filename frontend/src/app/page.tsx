@@ -1,13 +1,11 @@
 'use client';
 
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 import { Loader2 } from 'lucide-react';
-import WaveSurfer from 'wavesurfer.js';
-import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
-import { YtUrlInput } from '@/components/ytUrlInput';
-import clsx from 'clsx';
+import { YtUrlInput, YtUrlInputRef } from '@/components/ytUrlInput';
+import { Waveform } from '@/components/Waveform';
 import { UploadButton } from '@/components/uploadButton';
 import { ClearButton } from '@/components/clearButton';
 import { FormatSelector } from '@/components/formatSelector';
@@ -19,92 +17,34 @@ const YT_DOWNLOAD_ENDPOINT = `${BASE_URL}/yt-download/`;
 
 export default function AudioUploadForm() {
     const [audioUrl, setAudioUrl] = useState<string>("");
-    const wavesurfer = useRef<WaveSurfer | null>(null);
-    const [start, setStart] = useState(0);
-    const [end, setEnd] = useState(0);
+    const [trimRange, setTrimRange] = useState<{ "start": number, "end": number }>({ start: 0, end: 0 });
     const [outputFormat, setOutputFormat] = useState('aac');
-    const regions = useRef<RegionsPlugin | null>(null);
     const [awaitingSubmitResponse, setAwaitingSubmitResponse] = useState(false);
+    const [awaitingYoutubeDownload, setAwaitingYoutubeDownload] = useState(false);
+    const [waveformLoading, setWaveformLoading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
-    const [urlInput, setUrlInput] = useState("");
-    const [waveformLoading, setWaveformLoading] = useState(true);
-    const [awaitingYoutubeDownload, setWaitingYoutubeDownload] = useState(false);
+    const youtubeUrlInputRef = useRef<YtUrlInputRef>(null);
 
-    // Initialize Wavesurfer
-    useEffect(() => {
-        setWaveformLoading(true); // reset waveformLoading at every change to audioUrl
-        if (!audioUrl) return;
-
-        if (wavesurfer.current) {
-            wavesurfer.current.destroy();
-        }
-
-        if (regions.current) {
-            regions.current.destroy();
-        }
-
-        const rgp = RegionsPlugin.create();
-        rgp.on('region-clicked', (region, e) => {
-            e.stopPropagation();
-            region.play();
-        })
-
-        rgp.on('region-updated', (region) => {
-            setStart(region.start);
-            setEnd(region.end);
-        });
-
-        regions.current = rgp;
-
-        const ws = WaveSurfer.create({
-            container: '#waveform',
-            waveColor: '#4f46e5',
-            progressColor: '#6366f1',
-            plugins: [rgp],
-            mediaControls: true,
-            barWidth: 2,
-            barGap: 1,
-            barRadius: 2,
-        });
-
-        ws.on('decode', (duration) => {
-            setEnd(duration);
-            setWaveformLoading(false);
-            (new Promise((resolve) => setTimeout(resolve, 70))).then(() => {
-                regions.current?.clearRegions();
-                regions.current?.addRegion({
-                    start: 0,
-                    end: duration,
-                    color: 'rgba(99, 102, 241, 0.2)',
-                    resize: true,
-                });
-            });
-        });
-
-        wavesurfer.current = ws;
-        ws.load(audioUrl);
-
-    }, [audioUrl]);
-
-
+    console.log("render");
     const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
 
+        window.URL.revokeObjectURL(audioUrl);
         if (audioUrl) {
-            window.URL.revokeObjectURL(audioUrl);
         }
 
         const url = window.URL.createObjectURL(file);
         setAudioUrl(url);
-        setUrlInput("");
     };
 
-    const handleUrlDone = async () => {
-        setWaitingYoutubeDownload(true);
+    const onWaveformDone = useCallback(() => setWaveformLoading(false), []);
+
+    const handleUrlDone = async (youtubeUrl: string) => {
+        setAwaitingYoutubeDownload(true);
         setAudioUrl('');
         try {
-            const response = await fetch(`${YT_DOWNLOAD_ENDPOINT}?url=${encodeURIComponent(urlInput)}`);
+            const response = await fetch(`${YT_DOWNLOAD_ENDPOINT}?url=${encodeURIComponent(youtubeUrl)}`);
 
             if (!response.ok) { throw Error("youtube download failed") };
             const filename = response.headers.get('Content-Disposition')?.split("filename=")[1] ?? `downloaded.m4a`;
@@ -118,9 +58,11 @@ export default function AudioUploadForm() {
                 setAudioUrl(url);
             }
         } finally {
-            setWaitingYoutubeDownload(false);
+            setAwaitingYoutubeDownload(false);
         }
     };
+
+    const onTrimRangeUpdate = useCallback((start: number, end: number) => setTrimRange({ start, end }), []);
 
     const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
@@ -156,6 +98,11 @@ export default function AudioUploadForm() {
     };
 
 
+    useEffect(() => {
+        if (!audioUrl) return;
+        setWaveformLoading(true);
+    }, [audioUrl]);
+
     return (
         <div className="h-screen flex items-center justify-center bg-muted">
             <div className="w-full max-w-2xl">
@@ -179,12 +126,11 @@ export default function AudioUploadForm() {
                         <div className="flex-1 space-y-2">
                             <Label htmlFor="audio-url">or URL</Label>
                             <YtUrlInput
+                                ref={youtubeUrlInputRef}
                                 id="audio-url"
                                 type="url"
                                 name="input_url"
-                                value={urlInput}
                                 onDone={handleUrlDone}
-                                onChange={(e) => { setUrlInput(e.target.value) }}
                                 placeholder="eg. https://www.youtube.com/watch?v=dQw4w9WgXcQ"
                                 disabled={!!audioUrl || awaitingSubmitResponse}
                             />
@@ -193,7 +139,7 @@ export default function AudioUploadForm() {
 
                         {(audioUrl && !awaitingSubmitResponse) && (
                             <ClearButton
-                                onClick={() => { setAudioUrl(""); setUrlInput("") }}
+                                onClick={() => { setAudioUrl(""); youtubeUrlInputRef.current?.reset() }}
                             />
                         )}
                     </div>
@@ -202,16 +148,17 @@ export default function AudioUploadForm() {
 
                     {(audioUrl || awaitingYoutubeDownload) && (
                         <div className="space-y-4 p-4 border rounded-lg">
-                            {waveformLoading && (
+                            {(waveformLoading || awaitingYoutubeDownload) && (
                                 <div className="flex items-center justify-center z-10 rounded-lg">
                                     <Loader2 className="w-10 h-10 text-gray-400 animate-spin" />
                                 </div>
                             )}
-                            <div id="waveform" className={clsx("bg-muted rounded-lg p-4", waveformLoading && "hidden")} />
-                            <input type="hidden" name="start" value={start} />
-                            <input type="hidden" name="end" value={end} />
+
+                            <Waveform audioUrl={audioUrl} className={(!audioUrl || waveformLoading) ? "hidden" : null} onDone={onWaveformDone} onTrimRangeUpdate={onTrimRangeUpdate} />
                         </div>
                     )}
+                    <input type="hidden" name="start" value={trimRange.start} />
+                    <input type="hidden" name="end" value={trimRange.end} />
 
                     <Button
                         type="submit"
